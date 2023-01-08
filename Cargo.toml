@@ -1,0 +1,27 @@
+[package]
+name = "limaubali"
+version = "1.2.0"
+edition = "2021"
+authors = ["Faizal Azman"]
+
+[[bin]]
+name = "limaubali"
+path = "src/main.rs"
+
+[[bin]]
+name = "tuner"
+path = "src/tuner.rs"
+
+[dependencies]
+chess = "3.2"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.profiling]
+inherits = "release"
+debug = 1
+lto = false
