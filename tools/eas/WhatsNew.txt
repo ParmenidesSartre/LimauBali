@@ -1,0 +1,58 @@
+
+Whats new in V6.0?
+
+1) A new early sacrifice bonus is introduced. If a sacrifice happens early in the game, the engine gets EAS-points:
+(percent x 100 / 18)*(percent x 100 / 18). Early sac limit is: Average length of all wins in a database / 2.
+percent means here: percents of early sacs in the pool of all found sacs of one engine. So, theoretically,
+values of 0% or 100% can happen (but are very unlikely).
+
+2) The early sac bonus made a complete overhaul of the scoring-system necessary. So, from V6.0 the EAS-scores are
+very diffferent (higher) from scores, calculated by older version of the EAS-Tool. So, do never compare results of
+differente EAS-Tool versions!
+
+3) The short-wins move-limit for EAS-points is (after calculating it) no longer rounded to 5 or 10. This increases 
+the accuracy.
+
+4) A 3rd EAS-Ratinglist was added to the statistics file: Here just the EAS-points are listed, no percent values.
+This can be helpful for engine-developers, because it allows easier optimizations of single EAS-stats in engine-play.
+
+5) The EAS-Tool now builds just 2 pgn-output databases: interesting_wins.pgn and errorgames.pgn
+
+errorgames.pgn contains games with a Termination-Tag that suggests a non-regular game ending.
+("anbandoned" for example). These games are sorted out before building the EAS-score, so these games
+will not lead to distorted results.
+
+interesting_wins.pgn contains: 
+1) Queen Sacrifices, followed by
+2) 5+ PawnUnit Sacrifices, followed by
+3) 4 PawnUnit Sacrifices, followed by
+4) 3 PawnUnit Sacrifices, followed by
+5) 2 PawnUnit Sacrifices, followed by
+6) 1 PawnUnit Sacrifices, followed by
+7) Very short games, followed by
+8) Games, ended before endgame (material) was reached, followed by
+9) Games with material imbalance (Rook vs. Bishop and 2 pawns for example)
+
+The games in the output-files are sorted in 2 ways:
+First: The games are sorted by categories (category 1 is followed by category 2, 3, ... etc.).
+Second: In each category, the games are sorted by length (0-19 moves, followed by 20-24 moves, followed by
+35-29 moves... and so on, up to 120 moves and beyond). So, in each category, the shortest wins are at the
+beginning and followed by the longer wins...
+
+And, there are no double games in one output-file: If a game fits more than one category, it is stored
+in the lowest category, all other apperances of this game in higher categories are deleted.
+For example: A game contains a 3 PawnUnit-Sacrifice and is won before the endgame material is reached:
+This game is stored in category 4 (= 3 PawnUnit Sacrifices) and not in category 8...
+
+And each games gets a new Annotator-Tag, so it is clear, which category the game belongs to.
+One of these 8 tags is added to each game-notation:
+
+[Annotator "EAS-Tool: Queen Sacrifice found in this game"]
+[Annotator "EAS-Tool: 5+ PawnUnits Sacrifice found in this game"]
+[Annotator "EAS-Tool: 4 PawnUnits Sacrifice found in this game"]
+[Annotator "EAS-Tool: 3 PawnUnits Sacrifice found in this game"]
+[Annotator "EAS-Tool: 2 PawnUnits Sacrifice found in this game"]
+[Annotator "EAS-Tool: 1 PawnUnit Sacrifice found in this game"]
+[Annotator "EAS-Tool: Game was very short"]
+[Annotator "EAS-Tool: Game ended before endgame (material)"]
+[Annotator "EAS-Tool: Material imbalance found in this game"]
