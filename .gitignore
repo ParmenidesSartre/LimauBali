@@ -1,0 +1,16 @@
+# Build output
+/target/
+
+# PGN game databases (large files — not needed for source distribution)
+*.pgn
+books/pgn_downloads/
+
+# Runtime files
+*.epd
+games/
+
+# Editor & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
