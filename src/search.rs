@@ -704,10 +704,14 @@ pub fn find_best_move(
     for h in helpers { let _ = h.join(); }
 
     // Record this move for time model learning
-    let time_spent  = state.elapsed_ms();
-    let score_gain  = (best_score - state.personality.prev_score).abs();
+    let time_spent   = state.elapsed_ms();
+    let score_gain   = (best_score - state.personality.prev_score).abs();
     let was_unstable = score_gain > 30;
     state.personality.record_move_time(board, time_spent, score_gain, was_unstable);
+
+    // Persist move records after every move so data is never lost if the
+    // GUI closes without sending ucinewgame or result.
+    state.personality.time_model.save();
 
     state.personality.prev_score = best_score;
     SearchResult { best_move, score: best_score, depth: best_depth, nodes: state.nodes }
