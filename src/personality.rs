@@ -17,7 +17,7 @@
 
 use chess::{BitBoard, Board, ChessMove, Color, MoveGen, Piece};
 
-use crate::time_model::{Phase, TimeModel};
+use crate::time_model::{TimeControl, Phase, TimeModel};
 
 pub const ENGINE_ELO: i32 = 2245; // calibrated from tournament
 
@@ -90,12 +90,11 @@ impl Personality {
             _     => 0.5,
         };
         self.time_model.update(score);
-        let games = self.time_model.games_played;
-        let scales = self.time_model.phase_scale;
-        let bonus  = self.time_model.instability_bonus;
+        let tc  = self.time_model.active_tc;
+        let b   = &self.time_model.buckets[tc.idx()];
         eprintln!(
-            "info string TimeModel update #{}: opening={:.3} midgame={:.3} endgame={:.3} instability={:.3}",
-            games, scales[0], scales[1], scales[2], bonus
+            "info string TimeModel [{}] game #{}: opening={:.3} midgame={:.3} endgame={:.3} instability={:.3}",
+            tc.name(), b.games_played, b.phase_scale[0], b.phase_scale[1], b.phase_scale[2], b.instability_bonus
         );
     }
 
@@ -145,6 +144,16 @@ impl Personality {
         movestogo: Option<u64>,
         last_score_change: i32, // |score_now - score_prev|, 0 if first move
     ) -> (u64, u64) {
+        // Auto-detect time-control bucket so the learned parameters are drawn
+        // from the correct set (bullet / blitz / rapid / classical).
+        self.time_model.set_tc(our_time_ms);
+
+        // Flag detection: if the clock is critically low, mark it so the
+        // learning update can penalise the current phase scales.
+        if our_time_ms < 3_000 {
+            self.time_model.mark_near_flag();
+        }
+
         // Estimate moves remaining: use GUI hint if given, otherwise derive from
         // piece count (fewer pieces → endgame → fewer moves left).
         // Always keep a safety reserve of 2s (or 10% of clock, whichever is bigger)
