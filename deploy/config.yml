@@ -36,7 +36,7 @@ engine:
       move_quality: "best"
 
   uci_options:
-    Hash: 512
+    Hash: 256
     Style: Tal
 
   silence_stderr: true
