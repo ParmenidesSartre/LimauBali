@@ -148,3 +148,133 @@ pub fn pv_to_book(board: &Board, moves: &[ChessMove]) -> String {
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chess::{Board, ChessMove, Piece, Square};
+    use std::str::FromStr;
+
+    fn b(fen: &str) -> Board { Board::from_str(fen).unwrap() }
+    fn mv(from: Square, to: Square) -> ChessMove { ChessMove::new(from, to, None) }
+    fn mv_promo(from: Square, to: Square, p: Piece) -> ChessMove { ChessMove::new(from, to, Some(p)) }
+
+    // ── Pawn moves ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn pawn_double_push() {
+        assert_eq!(move_to_san(&Board::default(), mv(Square::E2, Square::E4)), "e4");
+    }
+
+    #[test]
+    fn pawn_single_push() {
+        assert_eq!(move_to_san(&Board::default(), mv(Square::D2, Square::D3)), "d3");
+    }
+
+    #[test]
+    fn pawn_capture() {
+        // 1.e4 d5 — white exd5
+        let board = b("rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2");
+        assert_eq!(move_to_san(&board, mv(Square::E4, Square::D5)), "exd5");
+    }
+
+    #[test]
+    fn pawn_promotion_to_queen() {
+        let board = b("8/P7/8/8/8/8/8/4K1k1 w - - 0 1");
+        assert_eq!(move_to_san(&board, mv_promo(Square::A7, Square::A8, Piece::Queen)), "a8=Q");
+    }
+
+    #[test]
+    fn pawn_promotion_to_knight() {
+        let board = b("8/P7/8/8/8/8/8/4K1k1 w - - 0 1");
+        assert_eq!(move_to_san(&board, mv_promo(Square::A7, Square::A8, Piece::Knight)), "a8=N");
+    }
+
+    // ── Piece moves ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn knight_development() {
+        assert_eq!(move_to_san(&Board::default(), mv(Square::G1, Square::F3)), "Nf3");
+    }
+
+    #[test]
+    fn bishop_development() {
+        let board = b("rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2");
+        assert_eq!(move_to_san(&board, mv(Square::F1, Square::C4)), "Bc4");
+    }
+
+    #[test]
+    fn rook_move() {
+        // Open rook on a1 moving to a4
+        let board = b("4k3/8/8/8/8/8/8/R3K3 w Q - 0 1");
+        assert_eq!(move_to_san(&board, mv(Square::A1, Square::A4)), "Ra4");
+    }
+
+    // ── Castling ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn kingside_castling() {
+        let board = b("r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4");
+        assert_eq!(move_to_san(&board, mv(Square::E1, Square::G1)), "O-O");
+    }
+
+    #[test]
+    fn queenside_castling() {
+        let board = b("r3kbnr/pppqpppp/2np4/1B2P3/3P4/2N2N2/PPP2PPP/R1BQK2R b KQkq - 0 6");
+        assert_eq!(move_to_san(&board, mv(Square::E8, Square::C8)), "O-O-O");
+    }
+
+    // ── Check and checkmate ───────────────────────────────────────────────────
+
+    #[test]
+    fn check_suffix() {
+        // 1.e4 e5 2.Bc4 Nc6 3.Qh5 — Qxf7+ gives check (or mate)
+        let board = b("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4");
+        let san = move_to_san(&board, mv(Square::H5, Square::F7));
+        assert!(san.ends_with('+') || san.ends_with('#'),
+            "Expected + or # suffix, got '{}'", san);
+    }
+
+    #[test]
+    fn checkmate_suffix() {
+        // Back-rank mate: white Rd1→d8 is checkmate (black king on g8, pawns on f7/g7/h7)
+        let board = b("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1");
+        let san = move_to_san(&board, mv(Square::D1, Square::D8));
+        assert!(san.ends_with('#'), "Expected '#' suffix, got '{}'", san);
+    }
+
+    // ── PV formatting ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn pv_empty_returns_empty_string() {
+        assert_eq!(pv_to_book(&Board::default(), &[]), "");
+    }
+
+    #[test]
+    fn pv_single_white_move() {
+        let moves = vec![ChessMove::new(Square::E2, Square::E4, None)];
+        assert_eq!(pv_to_book(&Board::default(), &moves), "1. e4");
+    }
+
+    #[test]
+    fn pv_two_moves() {
+        let moves = vec![
+            ChessMove::new(Square::E2, Square::E4, None),
+            ChessMove::new(Square::E7, Square::E5, None),
+        ];
+        assert_eq!(pv_to_book(&Board::default(), &moves), "1. e4 e5");
+    }
+
+    #[test]
+    fn pv_four_moves_increments_fullmove() {
+        let moves = vec![
+            ChessMove::new(Square::E2, Square::E4, None),
+            ChessMove::new(Square::E7, Square::E5, None),
+            ChessMove::new(Square::G1, Square::F3, None),
+            ChessMove::new(Square::B8, Square::C6, None),
+        ];
+        let pv = pv_to_book(&Board::default(), &moves);
+        assert!(pv.contains("2."), "Should show move number 2, got '{}'", pv);
+        assert!(pv.starts_with("1. e4"), "Should start with '1. e4', got '{}'", pv);
+    }
+}

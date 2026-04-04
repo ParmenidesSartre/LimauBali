@@ -182,3 +182,126 @@ pub const RANKS_FROM: [u64; 8] = {
 pub const FILE_A_MASK: u64 = 0x0101_0101_0101_0101u64;
 /// The h-file mask — used to prevent bitboard shift wrap from a→h.
 pub const FILE_H_MASK: u64 = 0x8080_8080_8080_8080u64;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mirror_is_involution() {
+        for i in 0..64 { assert_eq!(mirror(mirror(i)), i, "mirror(mirror({})) != {}", i, i); }
+    }
+
+    #[test]
+    fn mirror_corners() {
+        assert_eq!(mirror(0),  56); // a1 → a8
+        assert_eq!(mirror(7),  63); // h1 → h8
+        assert_eq!(mirror(56), 0);  // a8 → a1
+        assert_eq!(mirror(63), 7);  // h8 → h1
+    }
+
+    #[test]
+    fn pst_idx_white_identity() {
+        for i in 0..64 { assert_eq!(pst_idx(i, true), i); }
+    }
+
+    #[test]
+    fn pst_idx_black_mirrors() {
+        for i in 0..64 { assert_eq!(pst_idx(i, false), mirror(i)); }
+    }
+
+    #[test]
+    fn all_pst_arrays_are_64_entries() {
+        assert_eq!(PST_PAWN.len(),    64);
+        assert_eq!(PST_KNIGHT.len(),  64);
+        assert_eq!(PST_BISHOP.len(),  64);
+        assert_eq!(PST_ROOK.len(),    64);
+        assert_eq!(PST_QUEEN.len(),   64);
+        assert_eq!(PST_KING_MG.len(), 64);
+        assert_eq!(PST_KING_EG.len(), 64);
+    }
+
+    #[test]
+    fn pst_values_in_reasonable_range() {
+        for &v in PST_PAWN.iter()    { assert!(v >= -50  && v <= 200, "PST_PAWN value {} out of range", v); }
+        for &v in PST_KNIGHT.iter()  { assert!(v >= -60  && v <= 40,  "PST_KNIGHT value {} out of range", v); }
+        for &v in PST_BISHOP.iter()  { assert!(v >= -30  && v <= 30,  "PST_BISHOP value {} out of range", v); }
+        for &v in PST_ROOK.iter()    { assert!(v >= -20  && v <= 30,  "PST_ROOK value {} out of range", v); }
+        for &v in PST_QUEEN.iter()   { assert!(v >= -30  && v <= 20,  "PST_QUEEN value {} out of range", v); }
+        for &v in PST_KING_MG.iter() { assert!(v >= -60  && v <= 40,  "PST_KING_MG value {} out of range", v); }
+        for &v in PST_KING_EG.iter() { assert!(v >= -60  && v <= 50,  "PST_KING_EG value {} out of range", v); }
+    }
+
+    #[test]
+    fn file_masks_cover_8_squares_each() {
+        for (f, &m) in FILE_MASKS.iter().enumerate() {
+            assert_eq!(m.count_ones(), 8, "FILE_MASKS[{}] should have 8 bits", f);
+        }
+    }
+
+    #[test]
+    fn rank_masks_cover_8_squares_each() {
+        for (r, &m) in RANK_MASKS.iter().enumerate() {
+            assert_eq!(m.count_ones(), 8, "RANK_MASKS[{}] should have 8 bits", r);
+        }
+    }
+
+    #[test]
+    fn file_masks_cover_all_64_squares() {
+        let all = FILE_MASKS.iter().fold(0u64, |acc, &m| acc | m);
+        assert_eq!(all, !0u64);
+    }
+
+    #[test]
+    fn rank_masks_cover_all_64_squares() {
+        let all = RANK_MASKS.iter().fold(0u64, |acc, &m| acc | m);
+        assert_eq!(all, !0u64);
+    }
+
+    #[test]
+    fn white_ahead_decreasing_towards_rank8() {
+        for r in 0..7 {
+            assert!(WHITE_AHEAD[r].count_ones() > WHITE_AHEAD[r + 1].count_ones());
+        }
+        assert_eq!(WHITE_AHEAD[7], 0, "Nothing ahead of rank 8 for white");
+    }
+
+    #[test]
+    fn black_ahead_increasing_towards_rank1() {
+        for r in 1..8 {
+            assert!(BLACK_AHEAD[r].count_ones() > BLACK_AHEAD[r - 1].count_ones());
+        }
+        assert_eq!(BLACK_AHEAD[0], 0, "Nothing ahead of rank 1 for black");
+    }
+
+    #[test]
+    fn passed_pawn_bonuses_increase_by_rank() {
+        for r in 1..6 {
+            assert!(PASSED_PAWN_MG[r + 1] >= PASSED_PAWN_MG[r],
+                "PASSED_PAWN_MG[{}]={} should be >= [{}]={}",
+                r+1, PASSED_PAWN_MG[r+1], r, PASSED_PAWN_MG[r]);
+            assert!(PASSED_PAWN_EG[r + 1] >= PASSED_PAWN_EG[r],
+                "PASSED_PAWN_EG[{}]={} should be >= [{}]={}",
+                r+1, PASSED_PAWN_EG[r+1], r, PASSED_PAWN_EG[r]);
+        }
+    }
+
+    #[test]
+    fn piece_values_ordered_correctly() {
+        // Pawn < Knight <= Bishop < Rook < Queen < King
+        assert!(PIECE_VALUES[0] < PIECE_VALUES[1], "pawn < knight");
+        assert!(PIECE_VALUES[1] <= PIECE_VALUES[2], "knight <= bishop");
+        assert!(PIECE_VALUES[2] < PIECE_VALUES[3], "bishop < rook");
+        assert!(PIECE_VALUES[3] < PIECE_VALUES[4], "rook < queen");
+        assert!(PIECE_VALUES[4] < PIECE_VALUES[5], "queen < king");
+    }
+
+    #[test]
+    fn phase_weights_sum_to_max_phase() {
+        // Starting position: 4 knights + 4 bishops + 4 rooks + 2 queens
+        // = 4*1 + 4*1 + 4*2 + 2*4 = 4+4+8+8 = 24 = MAX_PHASE
+        let sum = 4 * PHASE_WEIGHT[1] + 4 * PHASE_WEIGHT[2]
+                + 4 * PHASE_WEIGHT[3] + 2 * PHASE_WEIGHT[4];
+        assert_eq!(sum, MAX_PHASE);
+    }
+}

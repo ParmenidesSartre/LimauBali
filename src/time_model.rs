@@ -351,3 +351,196 @@ impl TimeModel {
         let _ = fs::write(&path, text);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── TimeControl detection ─────────────────────────────────────────────────
+
+    #[test]
+    fn detect_bullet_boundaries() {
+        assert_eq!(TimeControl::detect(0),       TimeControl::Bullet);
+        assert_eq!(TimeControl::detect(60_000),  TimeControl::Bullet); // 1 min
+        assert_eq!(TimeControl::detect(179_999), TimeControl::Bullet); // just under 3 min
+    }
+
+    #[test]
+    fn detect_blitz_boundaries() {
+        assert_eq!(TimeControl::detect(180_000), TimeControl::Blitz); // 3 min exactly
+        assert_eq!(TimeControl::detect(300_000), TimeControl::Blitz); // 5 min
+        assert_eq!(TimeControl::detect(599_999), TimeControl::Blitz);
+    }
+
+    #[test]
+    fn detect_rapid_boundaries() {
+        assert_eq!(TimeControl::detect(600_000),   TimeControl::Rapid); // 10 min exactly
+        assert_eq!(TimeControl::detect(900_000),   TimeControl::Rapid); // 15 min
+        assert_eq!(TimeControl::detect(1_799_999), TimeControl::Rapid);
+    }
+
+    #[test]
+    fn detect_classical_boundaries() {
+        assert_eq!(TimeControl::detect(1_800_000), TimeControl::Classical); // 30 min exactly
+        assert_eq!(TimeControl::detect(5_400_000), TimeControl::Classical); // 90 min
+    }
+
+    // ── Ceiling / floor ordering ──────────────────────────────────────────────
+
+    #[test]
+    fn ceilings_increase_with_time_control() {
+        assert!(TimeControl::Bullet.ceiling()    < TimeControl::Blitz.ceiling());
+        assert!(TimeControl::Blitz.ceiling()     < TimeControl::Rapid.ceiling());
+        assert!(TimeControl::Rapid.ceiling()     < TimeControl::Classical.ceiling());
+    }
+
+    #[test]
+    fn target_cp_s_decreases_with_time_control() {
+        assert!(TimeControl::Bullet.target_cp_s()    > TimeControl::Blitz.target_cp_s());
+        assert!(TimeControl::Blitz.target_cp_s()     > TimeControl::Rapid.target_cp_s());
+        assert!(TimeControl::Rapid.target_cp_s()     > TimeControl::Classical.target_cp_s());
+    }
+
+    #[test]
+    fn instability_ceilings_increase_with_time_control() {
+        assert!(TimeControl::Bullet.instability_ceiling()    < TimeControl::Blitz.instability_ceiling());
+        assert!(TimeControl::Blitz.instability_ceiling()     < TimeControl::Rapid.instability_ceiling());
+        assert!(TimeControl::Rapid.instability_ceiling()     < TimeControl::Classical.instability_ceiling());
+    }
+
+    // ── BucketParams defaults ─────────────────────────────────────────────────
+
+    #[test]
+    fn bucket_params_default_values() {
+        let b = BucketParams::new();
+        assert_eq!(b.phase_scale,       [1.0, 1.0, 1.0]);
+        assert_eq!(b.instability_bonus, 0.40);
+        assert_eq!(b.games_played,      0);
+    }
+
+    // ── set_tc ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn set_tc_selects_correct_bucket() {
+        let mut m = TimeModel::new();
+        m.set_tc(60_000);      assert_eq!(m.active_tc, TimeControl::Bullet);
+        m.set_tc(300_000);     assert_eq!(m.active_tc, TimeControl::Blitz);
+        m.set_tc(900_000);     assert_eq!(m.active_tc, TimeControl::Rapid);
+        m.set_tc(3_600_000);   assert_eq!(m.active_tc, TimeControl::Classical);
+    }
+
+    // ── Clamping ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn phase_scale_clamped_to_bucket_ceiling() {
+        let mut m = TimeModel::new();
+        m.set_tc(300_000); // blitz, ceiling = 1.80
+        m.buckets[TimeControl::Blitz.idx()].phase_scale = [9.9, 9.9, 9.9];
+        assert_eq!(m.phase_scale_for(15), TimeControl::Blitz.ceiling());
+    }
+
+    #[test]
+    fn phase_scale_clamped_to_floor() {
+        let mut m = TimeModel::new();
+        m.set_tc(300_000);
+        m.buckets[TimeControl::Blitz.idx()].phase_scale = [-9.9, -9.9, -9.9];
+        assert_eq!(m.phase_scale_for(15), TimeControl::Blitz.floor());
+    }
+
+    #[test]
+    fn instability_scale_clamped_to_bucket_ceiling() {
+        let mut m = TimeModel::new();
+        m.set_tc(60_000); // bullet, instability_ceiling = 0.50
+        m.buckets[0].instability_bonus = 99.9;
+        assert_eq!(m.instability_scale(), TimeControl::Bullet.instability_ceiling());
+    }
+
+    // ── Learning update ───────────────────────────────────────────────────────
+
+    #[test]
+    fn games_played_increments_after_update() {
+        let mut m = TimeModel::new();
+        m.set_tc(300_000);
+        m.moves.push(MoveRecord { phase: Phase::Opening, time_ms: 1000, score_gain: 5, was_unstable: false });
+        m.update(0.5);
+        assert_eq!(m.buckets[TimeControl::Blitz.idx()].games_played, 1);
+    }
+
+    #[test]
+    fn moves_cleared_after_update() {
+        let mut m = TimeModel::new();
+        m.set_tc(300_000);
+        m.moves.push(MoveRecord { phase: Phase::Midgame, time_ms: 500, score_gain: 10, was_unstable: false });
+        m.update(0.5);
+        assert!(m.moves.is_empty());
+    }
+
+    #[test]
+    fn update_noop_when_no_moves() {
+        let mut m = TimeModel::new();
+        m.set_tc(300_000);
+        m.update(1.0);
+        assert_eq!(m.buckets[TimeControl::Blitz.idx()].games_played, 0);
+    }
+
+    #[test]
+    fn flag_penalty_reduces_scales() {
+        let mut m = TimeModel::new();
+        m.set_tc(300_000); // blitz
+        let idx = TimeControl::Blitz.idx();
+        m.buckets[idx].phase_scale       = [1.5, 1.5, 1.5];
+        m.buckets[idx].instability_bonus = 0.80;
+        m.near_flag = true;
+        m.moves.push(MoveRecord { phase: Phase::Midgame, time_ms: 500, score_gain: 5, was_unstable: false });
+        m.update(0.5);
+        let b = &m.buckets[idx];
+        // 1.5 * 0.85 = 1.275 — all scales should be pulled down
+        assert!(b.phase_scale[0]     < 1.5, "opening scale should decrease after flag");
+        assert!(b.phase_scale[1]     < 1.5, "midgame scale should decrease after flag");
+        assert!(b.phase_scale[2]     < 1.5, "endgame scale should decrease after flag");
+        assert!(b.instability_bonus  < 0.8, "instability bonus should decrease after flag");
+    }
+
+    #[test]
+    fn near_flag_cleared_after_update() {
+        let mut m = TimeModel::new();
+        m.set_tc(300_000);
+        m.near_flag = true;
+        m.moves.push(MoveRecord { phase: Phase::Opening, time_ms: 500, score_gain: 1, was_unstable: false });
+        m.update(0.5);
+        assert!(!m.near_flag);
+    }
+
+    #[test]
+    fn buckets_are_independent() {
+        let mut m = TimeModel::new();
+        m.set_tc(300_000); // update blitz
+        m.moves.push(MoveRecord { phase: Phase::Midgame, time_ms: 2000, score_gain: 50, was_unstable: false });
+        m.update(1.0);
+        // Rapid and classical buckets should remain at 0 games
+        assert_eq!(m.buckets[TimeControl::Rapid.idx()].games_played,     0);
+        assert_eq!(m.buckets[TimeControl::Classical.idx()].games_played, 0);
+        assert_eq!(m.buckets[TimeControl::Bullet.idx()].games_played,    0);
+    }
+
+    #[test]
+    fn decaying_lr_slows_over_time() {
+        // LR = 0.03 / (1 + games * 0.02)
+        let lr_at_0   = 0.03f32 / (1.0 + 0.0   * 0.02);
+        let lr_at_50  = 0.03f32 / (1.0 + 50.0  * 0.02);
+        let lr_at_100 = 0.03f32 / (1.0 + 100.0 * 0.02);
+        assert!(lr_at_0 > lr_at_50);
+        assert!(lr_at_50 > lr_at_100);
+        assert!(lr_at_100 > 0.0);
+    }
+
+    #[test]
+    fn phase_from_piece_count_correct() {
+        assert_eq!(Phase::from_piece_count(16), Phase::Opening);  // full board
+        assert_eq!(Phase::from_piece_count(11), Phase::Opening);  // just above threshold
+        assert_eq!(Phase::from_piece_count(10), Phase::Midgame);
+        assert_eq!(Phase::from_piece_count(5),  Phase::Midgame);
+        assert_eq!(Phase::from_piece_count(4),  Phase::Endgame);
+        assert_eq!(Phase::from_piece_count(0),  Phase::Endgame);
+    }
+}

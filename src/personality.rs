@@ -148,9 +148,12 @@ impl Personality {
         // from the correct set (bullet / blitz / rapid / classical).
         self.time_model.set_tc(our_time_ms);
 
-        // Flag detection: if the clock is critically low, mark it so the
-        // learning update can penalise the current phase scales.
-        if our_time_ms < 3_000 {
+        // Flag detection: mark near-flag earlier for bullet (2s) than blitz (3s).
+        let flag_threshold = match TimeControl::detect(our_time_ms) {
+            TimeControl::Bullet => 2_000,
+            _                   => 3_000,
+        };
+        if our_time_ms < flag_threshold {
             self.time_model.mark_near_flag();
         }
 
@@ -160,14 +163,32 @@ impl Personality {
         // so we never flag even if every factor stacks to maximum.
         let pieces = (board.pieces(Piece::Knight) | board.pieces(Piece::Bishop)
                     | board.pieces(Piece::Rook)   | board.pieces(Piece::Queen)).popcnt();
-        let estimated_mtg = if pieces > 10 { 35.0 }
-                            else if pieces > 6 { 25.0 }
-                            else if pieces > 2 { 15.0 }
-                            else { 8.0 };
+
+        // Bullet/blitz games end faster — fewer moves remain on average.
+        // Aggressive allocation: give each move more time by assuming fewer moves left.
+        let tc = self.time_model.active_tc;
+        let estimated_mtg = match tc {
+            TimeControl::Bullet => {
+                if pieces > 10 { 22.0 } else if pieces > 6 { 16.0 }
+                else if pieces > 2 { 10.0 } else { 5.0 }
+            }
+            TimeControl::Blitz => {
+                if pieces > 10 { 28.0 } else if pieces > 6 { 20.0 }
+                else if pieces > 2 { 12.0 } else { 6.0 }
+            }
+            _ => {
+                if pieces > 10 { 35.0 } else if pieces > 6 { 25.0 }
+                else if pieces > 2 { 15.0 } else { 8.0 }
+            }
+        };
         let mtg = movestogo.map(|m| m as f64).unwrap_or(estimated_mtg).max(1.0);
 
-        // Safety reserve: never budget more than 90% of remaining clock
-        let usable_ms = (our_time_ms as f64 * 0.90).max(1.0);
+        // Safety reserve: bullet uses 92%, others 90%
+        let reserve = match tc {
+            TimeControl::Bullet => 0.92,
+            _                                      => 0.90,
+        };
+        let usable_ms = (our_time_ms as f64 * reserve).max(1.0);
 
         // ── 1. Base time ──────────────────────────────────────────────────────
         // Standard formula: remaining_time / moves_to_go + increment
@@ -225,9 +246,14 @@ impl Personality {
         // ── 5. Phase factor — learned from experience ─────────────────────────
         let phase_factor = self.time_model.phase_scale_for(pieces) as f64;
 
-        // ── 6. Human variation (random jitter ±25%) ───────────────────────────
-        // This makes consecutive games feel different — humans are not clockwork.
-        let jitter = 0.75 + self.rand_f() * 0.50; // 0.75 – 1.25
+        // ── 6. Human variation (random jitter) ───────────────────────────────
+        // Bullet/blitz: tight ±10% — consistency matters more than variety.
+        // Rapid/classical: ±25% — more natural variation in longer games.
+        let jitter = match tc {
+            TimeControl::Bullet => 0.90 + self.rand_f() * 0.20, // 0.90–1.10
+            TimeControl::Blitz  => 0.85 + self.rand_f() * 0.30, // 0.85–1.15
+            _                                      => 0.75 + self.rand_f() * 0.50, // 0.75–1.25
+        };
 
         // ── 7. Style modifier ─────────────────────────────────────────────────
         let style_factor = match self.style {
@@ -261,17 +287,37 @@ impl Personality {
             * style_factor;
 
         // ── Clock pressure safety ─────────────────────────────────────────────
-        // Never use more than 40% of remaining clock in one move.
-        // If low on time (<5s), use at most 20% to avoid flagging.
-        let max_fraction = if our_time_ms < 5_000 { 0.20 }
-                           else if our_time_ms < 15_000 { 0.30 }
-                           else { 0.40 };
+        // Move faster as clock drains — thresholds are tighter for bullet.
+        // The max_fraction caps how much of the remaining clock one move can use.
+        let max_fraction = match tc {
+            TimeControl::Bullet => {
+                if      our_time_ms < 3_000  { 0.12 }  // < 3s  → tiny moves only
+                else if our_time_ms < 8_000  { 0.18 }  // < 8s  → very fast
+                else if our_time_ms < 15_000 { 0.25 }  // < 15s → fast
+                else                          { 0.38 }  // plenty of time
+            }
+            TimeControl::Blitz => {
+                if      our_time_ms < 5_000  { 0.15 }
+                else if our_time_ms < 15_000 { 0.22 }
+                else if our_time_ms < 30_000 { 0.30 }
+                else                          { 0.40 }
+            }
+            _ => {
+                if our_time_ms < 5_000  { 0.20 }
+                else if our_time_ms < 15_000 { 0.30 }
+                else                          { 0.40 }
+            }
+        };
         let max_allowed = (our_time_ms as f64 * max_fraction) as u64;
 
-        // Hard limit = 3× soft (catches instability extension in search)
-        // but still bounded by max_allowed
+        // Hard limit = 2× soft for bullet (less search extension room), 3× for others.
+        let hard_mult = match tc {
+            TimeControl::Bullet => 2,
+            _                                      => 3,
+        };
         let soft_ms = (soft as u64).min(max_allowed).max(1);
-        let hard_ms = (soft_ms * 3).min(max_allowed).min(our_time_ms.saturating_sub(200)).max(1);
+        let hard_ms = (soft_ms * hard_mult).min(max_allowed)
+                          .min(our_time_ms.saturating_sub(200)).max(1);
 
         (soft_ms, hard_ms)
     }

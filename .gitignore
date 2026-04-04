@@ -14,3 +14,7 @@ games/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Never commit real tokens
+lichess-bot/config.yml
+deploy/*.token

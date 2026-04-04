@@ -129,14 +129,16 @@ pub fn run_bench(state: &mut SearchState, depth: i32) -> BenchResult {
 }
 
 pub fn print_bench_result(r: &BenchResult) {
-    let abs_nodes   = r.total_nodes;
-    let q_pct       = r.qnodes  * 100 / abs_nodes.max(1);
-    let eval_pct    = r.eval_calls * 100 / abs_nodes.max(1);
-    let tt_pct      = r.tt_hits * 100 / abs_nodes.max(1);
+    let abs_nodes    = r.total_nodes;
+    let negamax_nodes = abs_nodes.saturating_sub(r.qnodes).max(1);
+    let q_pct        = r.qnodes    * 100 / abs_nodes.max(1);
+    let eval_pct     = r.eval_calls * 100 / abs_nodes.max(1);
+    let tt_pct       = r.tt_hits   * 100 / abs_nodes.max(1);
+    let tt_neg_pct   = r.tt_hits   * 100 / negamax_nodes;
     println!("info string === Bench (depth {}) ===", r.depth);
     println!("info string Positions   : {}", r.positions);
     println!("info string Nodes total : {}  ({}% qsearch)", abs_nodes, q_pct);
-    println!("info string TT cuts     : {}  ({}% of nodes)", r.tt_hits, tt_pct);
+    println!("info string TT cuts     : {}  ({}% all / {}% negamax)", r.tt_hits, tt_pct, tt_neg_pct);
     println!("info string Eval calls  : {}  ({}% of nodes)", r.eval_calls, eval_pct);
     println!("info string Time        : {:.1}s", r.elapsed_ms as f64 / 1000.0);
     println!("info string NPS         : {}", r.nps);

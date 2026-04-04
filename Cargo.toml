@@ -13,7 +13,8 @@ name = "tuner"
 path = "src/tuner.rs"
 
 [dependencies]
-chess = "3.2"
+chess    = "3.2"
+arrayvec = "0.7"
 
 [profile.release]
 opt-level = 3

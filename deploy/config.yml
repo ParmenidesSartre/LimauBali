@@ -1,0 +1,103 @@
+token: "TOKEN_PLACEHOLDER"
+url: "https://lichess.org/"
+
+engine:
+  dir: "/lichess-bot/engines"
+  name: "limaubali"
+  working_dir: "/lichess-bot/engines"
+  protocol: "uci"
+  ponder: false
+  debug: false
+
+  polyglot:
+    enabled: false
+
+  draw_or_resign:
+    resign_enabled: false
+    offer_draw_enabled: false
+    offer_draw_for_egtb_zero: false
+
+  online_moves:
+    max_out_of_book_moves: 10
+    max_retries: 2
+    lichess_opening_explorer:
+      enabled: true
+      min_time: 20
+      max_time: 300
+      source: "masters"
+      sort: "winrate"
+      min_games: 5
+    online_egtb:
+      enabled: true
+      min_time: 20
+      max_time: 300
+      max_pieces: 7
+      source: "lichess"
+      move_quality: "best"
+
+  uci_options:
+    Hash: 512
+    Style: Tal
+
+  silence_stderr: true
+
+abort_time: 20
+fake_think_time: false
+rate_limiting_delay: 500
+move_overhead: 2000
+max_takebacks_accepted: 0
+quit_after_all_games_finish: false
+
+correspondence:
+  move_time: 60
+  checkin_period: 300
+  disconnect_time: 150
+  ponder: false
+
+challenge:
+  concurrency: 1
+  sort_by: "best"
+  preference: "none"
+  accept_bot: true
+  only_bot: false
+  max_increment: 30
+  min_increment: 0
+  max_base: 180
+  min_base: 15
+  variants:
+    - standard
+  time_controls:
+    - bullet
+    - blitz
+  modes:
+    - casual
+    - rated
+  bullet_requires_increment: false
+  max_simultaneous_games_per_user: 1
+
+greeting:
+  hello: "Assalamualaikum! I'm LimauBali, a chess engine from Malaysia. Good luck {opponent}!"
+  goodbye: "Good game! Come back for a rematch!"
+  hello_spectators: "Welcome! LimauBali — Malaysian chess engine."
+  goodbye_spectators: "Thanks for watching!"
+
+pgn_directory: "game_records"
+pgn_file_grouping: "all"
+
+matchmaking:
+  allow_matchmaking: true
+  allow_during_games: false
+  challenge_variant: "standard"
+  challenge_timeout: 1
+  challenge_initial_time:
+    - 60
+    - 120
+    - 180
+  challenge_increment:
+    - 0
+    - 1
+    - 2
+  opponent_rating_difference: 400
+  rating_preference: "high"
+  challenge_mode: "rated"
+  challenge_filter: coarse

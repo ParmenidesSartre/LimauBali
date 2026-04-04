@@ -17,6 +17,7 @@
 //  Search itself is style-neutral — no ordering hacks based on style.
 // ─────────────────────────────────────────────────────────────────────────────
 
+use arrayvec::ArrayVec;
 use chess::{BitBoard, Board, BoardStatus, ChessMove, Color, MoveGen, Piece};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,7 +25,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::book::petrosian_book;
-use crate::eval::{evaluate_fast, EvalParams};
+use crate::eval::{evaluate_fast, evaluate_qsearch, EvalParams};
 use crate::personality::{Personality, Style};
 use crate::san::pv_to_book;
 use crate::tables::{CONTEMPT, INFINITY, MATE_SCORE, PIECE_VALUES};
@@ -39,9 +40,9 @@ const NULL_MIN_DEPTH:  i32   = 3;
 const LMR_MIN_DEPTH:   i32   = 3;
 const LMR_MIN_MOVES:   usize = 3;
 const FUTILITY_PER_D:  i32   = 200;  // futility margin per depth
-const CONTEMPT_TAL:       i32 = 60;   // avoids draws — always plays for the win
+const CONTEMPT_TAL:       i32 = 200;  // strongly avoids draws — sacrificial style demands winners
 const CONTEMPT_PETROSIAN: i32 = -50;  // draws are desirable — 40-50% draw rate
-const CONTEMPT_FISCHER:   i32 = 10;   // slightly avoids draws — Fischer played to win
+const CONTEMPT_FISCHER:   i32 = 80;   // avoids draws — technical, always plays for full point
 const HIST_MAX:        i32   = 16_384;
 const ASP_WINDOW:      i32   = 50;   // aspiration half-window (±50cp)
 
@@ -206,7 +207,7 @@ impl SearchState {
         for &h in &self.hash_history {
             if h == key { count += 1; if count >= 2 { return true; } }
         }
-        for &h in &self.ply_hashes[..ply] {
+        for &h in &self.ply_hashes[..ply.min(MAX_PLY)] {
             if h == key { count += 1; if count >= 2 { return true; } }
         }
         false
@@ -266,19 +267,6 @@ fn score_move(
     history[from][to]
 }
 
-fn order_moves(
-    board: &Board,
-    moves: Vec<ChessMove>,
-    tt_move: Option<ChessMove>,
-    killers: &[Option<ChessMove>; 2],
-    history: &[[i32; 64]; 64],
-) -> Vec<ChessMove> {
-    let mut scored: Vec<(i32, ChessMove)> = moves.into_iter()
-        .map(|mv| (score_move(board, mv, tt_move, killers, history), mv))
-        .collect();
-    scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-    scored.into_iter().map(|(_, mv)| mv).collect()
-}
 
 // ── Quiescence Search ─────────────────────────────────────────────────────────
 //
@@ -296,14 +284,33 @@ fn quiesce(board: &Board, mut alpha: i32, beta: i32, state: &mut SearchState) ->
         BoardStatus::Ongoing   => {}
     }
 
+    // ── TT probe ─────────────────────────────────────────────────────────────
+    // Depth 0 entries are written by quiescence; they cut repeated capture
+    // sequences that arise from transpositions in the capture tree.
+    let key = board.get_hash();
+    let orig_alpha = alpha;
+    if let Some(e) = state.tt.get(key) {
+        if e.depth >= 0 {
+            match e.flag {
+                EXACT       => { state.tt_hits += 1; return e.score; }
+                LOWER_BOUND => { if e.score >= beta  { state.tt_hits += 1; return e.score; } }
+                UPPER_BOUND => { if e.score <= alpha { state.tt_hits += 1; return e.score; } }
+                _           => {}
+            }
+        }
+    }
+
     state.eval_calls += 1;
-    let stand_pat = evaluate_fast(board, &state.ep);
+    let stand_pat = evaluate_qsearch(board, &state.ep);
 
     if stand_pat >= beta { return beta; }
     if stand_pat > alpha { alpha = stand_pat; }
 
-    // Collect captures + queen promotions, ordered by MVV-LVA
-    let mut moves: Vec<(i32, ChessMove)> = MoveGen::new_legal(board)
+    // Collect captures + queen promotions, ordered by MVV-LVA.
+    // Tuple: (sort_key, gain_cp, mv) — gain cached to avoid a second piece_on() call.
+    // ArrayVec<_, 64>: stack-allocated, eliminates 14M heap allocs across the bench.
+    // 64 > max realistic captures in any legal position (~30-35), so no overflow risk.
+    let mut moves: ArrayVec<(i32, i32, ChessMove), 64> = MoveGen::new_legal(board)
         .filter(|&mv| {
             is_capture(board, mv)
                 || mv.get_promotion() == Some(Piece::Queen)
@@ -315,26 +322,37 @@ fn quiesce(board: &Board, mut alpha: i32, beta: i32, state: &mut SearchState) ->
             let atk_val = board.piece_on(mv.get_source())
                 .map(|p| PIECE_VALUES[p.to_index()])
                 .unwrap_or(100);
-            (victim_val * 10 - atk_val, mv)
+            (victim_val * 10 - atk_val, victim_val, mv)
         })
         .collect();
     moves.sort_unstable_by(|a, b| b.0.cmp(&a.0));
 
-    for (_, mv) in moves {
+    let mut best_score = stand_pat;
+    let mut best_move  = None;
+
+    for &(_, gain, mv) in &moves {
         // Delta pruning: skip if even winning this piece cannot raise alpha
-        let gain = board.piece_on(mv.get_dest())
-            .map(|p| PIECE_VALUES[p.to_index()])
-            .unwrap_or(PIECE_VALUES[0]);
         if stand_pat + gain + DELTA_MARGIN < alpha { continue; }
 
         let nb    = board.make_move_new(mv);
         let score = -quiesce(&nb, -beta, -alpha, state);
 
-        if score >= beta { return beta; }
+        if score > best_score {
+            best_score = score;
+            best_move  = Some(mv);
+        }
+        if score >= beta {
+            state.tt.put(key, 0, LOWER_BOUND, score, best_move);
+            return score;
+        }
         if score > alpha { alpha = score; }
     }
 
-    alpha
+    // ── TT store ──────────────────────────────────────────────────────────────
+    let flag = if best_score <= orig_alpha { UPPER_BOUND } else { EXACT };
+    state.tt.put(key, 0, flag, best_score, best_move);
+
+    best_score
 }
 
 // ── Negamax alpha-beta ────────────────────────────────────────────────────────
@@ -375,7 +393,7 @@ pub fn negamax(
     // ── Transposition table lookup ───────────────────────────────────────────
     let tt_entry = state.tt.get(key);
     if let Some(entry) = tt_entry {
-        if !pv_node && entry.depth >= depth {
+        if entry.depth >= depth {
             match entry.flag {
                 EXACT       => { state.tt_hits += 1; return entry.score; }
                 LOWER_BOUND => { if entry.score >= beta  { state.tt_hits += 1; return entry.score; } }
@@ -416,20 +434,23 @@ pub fn negamax(
     };
 
     // ── Generate and order moves ─────────────────────────────────────────────
-    let all_moves: Vec<ChessMove> = MoveGen::new_legal(board).collect();
+    // Score each move once upfront (O(n)), then sort. This is 1 allocation
+    // instead of the original 3 (generate Vec + scored Vec + result Vec).
     let killers   = state.killers[ply.min(MAX_PLY - 1)];
     let color_idx = if board.side_to_move() == Color::White { 0 } else { 1 };
-    let ordered   = order_moves(board, all_moves, tt_move, &killers,
-                                &state.history[color_idx]);
+    let mut ordered: Vec<(i32, ChessMove)> = MoveGen::new_legal(board)
+        .map(|mv| (score_move(board, mv, tt_move, &killers, &state.history[color_idx]), mv))
+        .collect();
+    ordered.sort_unstable_by(|a, b| b.0.cmp(&a.0));
 
     let mut best_score     = -INFINITY;
     let mut best_move      = None;
     let mut moves_searched = 0usize;
     let orig_alpha         = alpha;
 
-    for mv in &ordered {
-        let cap = is_capture(board, *mv);
-        let nb  = board.make_move_new(*mv);
+    for &(_, mv) in &ordered {
+        let cap = is_capture(board, mv);
+        let nb  = board.make_move_new(mv);
         let gives_check = *nb.checkers() != BitBoard(0);
 
         // ── Futility pruning ─────────────────────────────────────────────────
@@ -490,19 +511,19 @@ pub fn negamax(
 
         // Collect root move scores for personality-based selection
         if ply == 0 {
-            state.root_scores.push((score, *mv));
+            state.root_scores.push((score, mv));
         }
 
         if score > best_score {
             best_score = score;
-            best_move  = Some(*mv);
+            best_move  = Some(mv);
         }
         if score > alpha { alpha = score; }
         if alpha >= beta {
             // Beta cutoff: update killers and history for quiet moves
             if !cap {
                 let k = &mut state.killers[ply.min(MAX_PLY - 1)];
-                if k[0] != Some(*mv) { k[1] = k[0]; k[0] = Some(*mv); }
+                if k[0] != Some(mv) { k[1] = k[0]; k[0] = Some(mv); }
                 let h = &mut state.history[color_idx]
                     [mv.get_source().to_index()][mv.get_dest().to_index()];
                 *h = (*h + depth * depth).min(HIST_MAX);
@@ -715,4 +736,128 @@ pub fn find_best_move(
 
     state.personality.prev_score = best_score;
     SearchResult { best_move, score: best_score, depth: best_depth, nodes: state.nodes }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chess::{Board, ChessMove, MoveGen, Square};
+    use std::str::FromStr;
+    use std::time::{Duration, Instant};
+
+    /// Helper: run search at given depth on a FEN position, silent mode.
+    fn search(fen: &str, depth: i32) -> SearchResult {
+        let board = Board::from_str(fen).unwrap();
+        let mut state    = SearchState::new(1);
+        state.silent     = true;
+        state.hard_deadline = Some(Instant::now() + Duration::from_secs(10));
+        find_best_move(&board, depth, 0, &mut state)
+    }
+
+    // ── Correctness: best move is always legal ────────────────────────────────
+
+    #[test]
+    fn best_move_is_legal_starting_position() {
+        let board  = Board::default();
+        let mut st = SearchState::new(1);
+        st.silent  = true;
+        st.hard_deadline = Some(Instant::now() + Duration::from_secs(10));
+        let result = find_best_move(&board, 4, 0, &mut st);
+        if let Some(mv) = result.best_move {
+            let legal: Vec<ChessMove> = MoveGen::new_legal(&board).collect();
+            assert!(legal.contains(&mv), "Best move {} is not legal", mv);
+        }
+    }
+
+    #[test]
+    fn best_move_is_legal_middlegame() {
+        // Typical middlegame position
+        let fen   = "r1bq1rk1/pp2ppbp/2np1np1/3Np3/2B1P3/2N1BP2/PPP3PP/R2QK2R w KQ - 0 9";
+        let board = Board::from_str(fen).unwrap();
+        let mut st = SearchState::new(1);
+        st.silent  = true;
+        st.hard_deadline = Some(Instant::now() + Duration::from_secs(10));
+        let result = find_best_move(&board, 4, 0, &mut st);
+        if let Some(mv) = result.best_move {
+            let legal: Vec<ChessMove> = MoveGen::new_legal(&board).collect();
+            assert!(legal.contains(&mv), "Best move {} is not legal", mv);
+        }
+    }
+
+    // ── Tactics: find forced mates ────────────────────────────────────────────
+
+    #[test]
+    fn finds_back_rank_mate_in_1() {
+        // White Rook d1 → d8# (black king g8, pawns on f7/g7/h7 block escape)
+        let result = search("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1", 2);
+        let mv = result.best_move.expect("should find a move");
+        assert_eq!(mv, ChessMove::new(Square::D1, Square::D8, None),
+            "Expected Rd8#, got {}", mv);
+    }
+
+    #[test]
+    fn finds_ladder_mate_in_1() {
+        // Two-rook ladder: Rc5→c8# (black king a8, Rb6 covers b-file, Ka6 controls corner)
+        let result = search("k7/8/KR6/2R5/8/8/8/8 w - - 0 1", 2);
+        let mv = result.best_move.expect("should find a move");
+        assert_eq!(mv, ChessMove::new(Square::C5, Square::C8, None),
+            "Expected Rc8#, got {}", mv);
+    }
+
+    #[test]
+    fn finds_queen_and_king_mate_in_1() {
+        // Qg3→g2# (white Kf3, Qg3, black Kh1 — Qg2 is checkmate)
+        let result = search("8/8/8/8/8/5KQ1/8/7k w - - 0 1", 2);
+        let mv = result.best_move.expect("should find a move");
+        assert_eq!(mv, ChessMove::new(Square::G3, Square::G2, None),
+            "Expected Qg2#, got {}", mv);
+    }
+
+    // ── Tactics: capture free material ───────────────────────────────────────
+
+    #[test]
+    fn captures_undefended_queen() {
+        // White Ra4 captures undefended black Qa5 (clear path, no defender)
+        let result = search("8/8/8/q7/R7/8/8/4K1k1 w - - 0 1", 2);
+        let mv = result.best_move.expect("should find a move");
+        assert_eq!(mv, ChessMove::new(Square::A4, Square::A5, None),
+            "Expected Rxa5 (capturing hanging queen), got {}", mv);
+    }
+
+    // ── Search metrics ────────────────────────────────────────────────────────
+
+    #[test]
+    fn search_evaluates_at_least_one_node() {
+        let result = search("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 3);
+        assert!(result.nodes > 0, "Search should count nodes");
+    }
+
+    #[test]
+    fn depth_within_requested_bounds() {
+        // depth=0 is valid when a book move is returned immediately
+        let result = search("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 4);
+        assert!(result.depth >= 0 && result.depth <= 4,
+            "Depth {} should be in [0, 4]", result.depth);
+    }
+
+    #[test]
+    fn score_within_plausible_range() {
+        // Starting position score should be well within normal bounds
+        let result = search("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 4);
+        let score = result.score;
+        assert!(score > -500 && score < 500,
+            "Starting position score {} is implausibly large", score);
+    }
+
+    // ── Evaluation consistency ────────────────────────────────────────────────
+
+    #[test]
+    fn higher_depth_does_not_flip_sign_on_equal_position() {
+        // Starting position should be very close to equal at all depths
+        let d2 = search("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 2);
+        let d4 = search("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 4);
+        // Both should agree on the sign (or be 0)
+        assert!(d2.score * d4.score >= 0,
+            "Depth 2 score {} and depth 4 score {} disagree on sign", d2.score, d4.score);
+    }
 }
