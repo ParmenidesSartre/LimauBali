@@ -1,5 +1,5 @@
 # ── Stage 1: Build the Rust engine ───────────────────────────────────────────
-FROM rust:1.75-slim AS builder
+FROM rust:latest AS builder
 
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
