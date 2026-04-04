@@ -21,22 +21,12 @@ engine:
     max_out_of_book_moves: 10
     max_retries: 2
     lichess_opening_explorer:
-      enabled: true
-      min_time: 20
-      max_time: 300
-      source: "masters"
-      sort: "winrate"
-      min_games: 5
+      enabled: false
     online_egtb:
-      enabled: true
-      min_time: 20
-      max_time: 300
-      max_pieces: 7
-      source: "lichess"
-      move_quality: "best"
+      enabled: false
 
   uci_options:
-    Hash: 256
+    Hash: 128
     Style: Tal
 
   silence_stderr: true
